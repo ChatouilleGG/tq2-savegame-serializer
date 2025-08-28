@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="author" content="Chatouille">
+<title>tq2-savegame-serializer(sample)</title>
+<!--<link rel="icon" type="image/svg" href="img/favicon.svg"/>-->
+
+<!-- SYNTAX HIGHLIGHTER -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/stackoverflow-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+
+<style>
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html, body {
+	position: fixed;
+	width: 100vw;
+	height: 100vh;
+	font-family: system-ui;
+	background: #324;
+	color: #ddd;
+}
+
+body {
+	padding: 1em;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+}
+
+body > *+* { margin-top: 1em; }
+
+h1 { font-weight: 300; }
+
+label {
+	display: flex;
+	align-items: center;
+}
+
+input[type="checkbox"] {
+	width: 1.4em;
+	height: 1.4em;
+	margin-right: 0.5em;
+}
+
+pre {
+	width: 100%;
+	flex: 1 1 0;
+	overflow: auto;
+	tab-size: 2em;
+}
+</style>
+<body>
+
+<h1>TQ2 Savegame Serializer - Sample Web Integration</h1>
+<input type="file" onchange="onFile(this)" accept=".sav"/>
+<label><input type="checkbox" id="cbShowReflection" onchange="renderJson()"/>Show reflection data</label>
+<pre><code id="view" class="language-json"></code></pre>
+
+<script src="./serializer.js" referrerpolicy="no-referrer"></script>
+<script type="text/javascript">
+
+function onFile(input) {
+	if (input.files[0]) {
+		const reader = new FileReader();
+		reader.onload = function(event) {
+			if (event.target.readyState == FileReader.DONE)
+				onBuffer(event.target.result);
+		};
+		reader.onerror = onError;
+		reader.readAsArrayBuffer(input.files[0]);
+	}
+}
+
+let data = null;
+
+function onBuffer(buf) {
+	try {
+		let reader = new TQ2SS.UReader(buf);
+		data = reader.File_Data_Player();
+		renderJson();
+		if (!reader.isEOF())
+			throw new Error("Deserialization complete but reader has not reached end-of-file");
+	}
+	catch(err) { onError(err); }
+}
+
+function renderJson() {
+	TQ2SS.Options.JsonSkipReflection = !document.getElementById('cbShowReflection').checked;
+
+	let view = document.getElementById('view');
+
+	view.innerHTML = TQ2SS.ToJson(data);
+
+	view.setAttribute('data-highlighted','');
+
+	setTimeout(hljs.highlightAll, 1);
+}
+
+function onError(err) {
+	console.error(err);
+	alert(err);
+}
+
+</script>
+
+</body>
+</html>

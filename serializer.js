@@ -3,12 +3,16 @@
 // (c) Chatouille
 //============================================================
 
-//TODO: make this JS browser-compatible
+(function() {
 
-//TODO: make proper API for browser usage and proper CLI for standalone usage
-
-const fs = require('fs');
-const path = require('path');
+if (typeof(Buffer) == 'undefined') {
+	let script = document.createElement('script');
+	script.src = 'https://bundle.run/buffer@6.0.3';
+	script.onload = function() {
+		window.Buffer = buffer.Buffer;
+	}
+	document.head.appendChild(script);
+}
 
 //============================================================
 // Base class of UReader and UWriter
@@ -96,12 +100,18 @@ class UReader extends UBuffer {
 	constructor(buffer) {
 		super();
 
+		if (typeof(window) != 'undefined' && buffer instanceof ArrayBuffer)
+			buffer = Buffer.from(buffer);
+
 		this.buffer = buffer;
 		this.offset = 0;
 	}
 
 	static fromFile(filePath) {
-		return new UReader(fs.readFileSync(filePath));
+		if (typeof(process) == 'undefined')
+			throw new Error("Cannot use fromFile() in web browser - read input file as array buffer and use default constructor instead");
+
+		return new UReader(require('fs').readFileSync(filePath));
 	}
 
 	isReader() { return true; }
@@ -164,6 +174,10 @@ class UReader extends UBuffer {
 			return this.buffer.toString('utf16le', this.offset-size, this.offset-2);
 		}
 	}
+
+	isEOF() {
+		return this.offset == this.buffer.length;
+	}
 }
 
 //============================================================
@@ -172,16 +186,21 @@ class UReader extends UBuffer {
 const WRITE_BUF_SIZE = 100000;
 
 class UWriter extends UBuffer {
-	constructor(filePath) {
+	constructor() {
 		super();
-
-		this.filePath = filePath;
-
-		if (this.filePath)
-			fs.writeFileSync(filePath, "");
 
 		this.buffer = Buffer.alloc(WRITE_BUF_SIZE);
 		this.offset = 0;
+	}
+
+	static toFile(filePath) {
+		if (typeof(process) == 'undefined')
+			throw new Error("Cannot use toFile() in web browser - use default constructor and getBuffer() at the end");
+
+		let writer = new UWriter();
+		writer.filePath = filePath;
+		require('fs').writeFileSync(filePath, "");
+		return writer;
 	}
 
 	isWriter() { return true; }
@@ -274,7 +293,10 @@ class UWriter extends UBuffer {
 	}
 
 	flush() {
-		fs.writeFileSync(this.filePath, this.getBuffer(), { flag:'a' });
+		if (typeof(process) == 'undefined')
+			throw new Error("Cannot use flush() in web browser - use getBuffer() instead to retrieve bytes");
+
+		require('fs').writeFileSync(this.filePath, this.getBuffer(), { flag:'a' });
 		this.buffer = Buffer.alloc(WRITE_BUF_SIZE);
 		this.offset = 0;
 	}
@@ -549,11 +571,14 @@ UReader.prototype.FPropertyValue = function(tag) {
 		if (tag.Size < 10000 || err != "cascade")
 			console.error(this.buffer.slice(startOffset, startOffset + tag.Size).toString('hex'));
 
-		if (process.switches.earlyexit)
-			process.exit(1);
+		if (SerializerOptions.EarlyExit) {
+			if (typeof(process) != 'undefined')
+				process.exit(1);
+			else
+				throw 'cascade';
+		}
 
 		this.seek(startOffset + tag.Size);
-		//throw "cascade";
 		return null;
 	}
 }
@@ -1077,54 +1102,9 @@ function(val) {
 }
 
 //============================================================
-// Main
-
-let inputFile;
-
-process.switches = {};
-for (let i=2; i<process.argv.length; i++) {
-	let arg = process.argv[i];
-	if (arg.startsWith("-")) {
-		arg = arg.replace(/^\-+/, "");
-		let p = arg.indexOf("=");
-		if (p != -1)
-			process.switches[arg.toLowerCase().substr(0,p)] = arg.substr(p+1);
-		else
-			process.switches[arg.toLowerCase()] = true;
-	}
-	else if (!inputFile)
-		inputFile = path.resolve(arg);
-	else
-		return console.error("Extraneous argument '" + arg + "'");
-}
-
-if (!inputFile) {
-	console.error("Missing input file");
-	process.exit(1);
-}
-
-const reader = UReader.fromFile(path.resolve(inputFile));
-let data = reader.File_PublicCrossCharacterSaveData();
-console.log(require('util').inspect(data, {colors:true,depth:4}));
-
-if (process.switches.json) {
-	fs.writeFileSync(typeof(process.switches.json) == 'string' ? process.switches.json : "out.json", serializeToJson(data));
-}
-
-if (reader.offset != reader.buffer.length)
-	console.error("ERROR: Reader has not reached EOF");
-
-if (process.switches.resave) {
-	const writer = new UWriter(typeof(process.switches.out) == 'string' ? process.switches.out : "out.sav");
-	writer.File_PublicCrossCharacterSaveData(data);
-	writer.flush();
-}
-
-
-//============================================================
 // Custom JSON serializer (more compact & readable output)
 
-function serializeToJson(inValue, indentStr, forceInline) {
+function ToJson(inValue, indentStr, forceInline) {
 	if (inValue === undefined)
 		return "undefined";
 	if (typeof(inValue) == 'number' || typeof(inValue) == 'boolean' || typeof(inValue) == 'bigint')
@@ -1136,20 +1116,20 @@ function serializeToJson(inValue, indentStr, forceInline) {
 			return "null";
 
 		indentStr || (indentStr = '');
-		const indentStr2 = indentStr+'\t';
+		const indentStr2 = indentStr + SerializerOptions.JsonIndentUnit;
 
 		if (inValue instanceof Array) {
 			// Serialize arrays inline, if there are subobjects they will pretty themselves
 			let result = '[';
 			for (let i=0; i<inValue.length; i++)
-				result += (i>0 ? ',' : '') + serializeToJson(inValue[i], indentStr, forceInline);
+				result += (i>0 ? ',' : '') + ToJson(inValue[i], indentStr, forceInline);
 			result += ']';
 
 			// If array is effectively inline, see if it makes more sense to print line-by-line instead
 			if (result.indexOf('\n') == -1 && inValue.length > 1 && result.length > 100 && result.length/inValue.length > 4) {
 				result = '[';
 				for (let item of inValue)
-					result += '\n' + indentStr2 + serializeToJson(item) + ',';
+					result += '\n' + indentStr2 + ToJson(item) + ',';
 				result = result.slice(0,-1) + '\n' + indentStr + ']';
 			}
 
@@ -1163,7 +1143,7 @@ function serializeToJson(inValue, indentStr, forceInline) {
 			if (inValue[k] === undefined)
 				continue;
 
-			if (process.switches.skipreflection && k == PROPERTIES_KEY)
+			if (SerializerOptions.JsonSkipReflection && k == PROPERTIES_KEY)
 				continue;
 
 			// Serialize key (assumed it has no double quotes)
@@ -1180,7 +1160,7 @@ function serializeToJson(inValue, indentStr, forceInline) {
 			)) {
 				result += '[';
 				for (let item of inValue[k])
-					result += '\n'+indentStr2+'\t'+serializeToJson(item, "", true)+',';
+					result += '\n' + indentStr2 + SerializerOptions.JsonIndentUnit + ToJson(item, "", true) + ',';
 				if (inValue[k].length == 0)
 					result += '],';
 				else
@@ -1188,7 +1168,7 @@ function serializeToJson(inValue, indentStr, forceInline) {
 			}
 			// Default case
 			else
-				result += serializeToJson(inValue[k], indentStr2, forceInline)+',';
+				result += ToJson(inValue[k], indentStr2, forceInline)+',';
 		}
 		if (result.length == 1)
 			return result+'}';
@@ -1199,3 +1179,33 @@ function serializeToJson(inValue, indentStr, forceInline) {
 	}
 	return "";
 }
+
+//============================================================
+// Exports
+
+let SerializerOptions = {
+
+	// Stop immediately in case of failure, rather than trying to recover when possible
+	EarlyExit: false,
+
+	// Skips all reflection data when using ToJson
+	JsonSkipReflection: false,
+
+	// Indent unit when using ToJson
+	JsonIndentUnit: '\t',
+
+};
+
+const TQ2SS = {
+	UBuffer,
+	UReader,
+	UWriter,
+	ToJson,
+	Options: SerializerOptions,
+};
+if (typeof(window) != 'undefined')
+	window.TQ2SS = TQ2SS;
+else
+	module.exports = TQ2SS;
+
+})();
