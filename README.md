@@ -1,0 +1,1 @@
+# tq2-savegame-serializer
