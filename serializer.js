@@ -1166,6 +1166,22 @@ function ToJson(inValue, indentStr, forceInline) {
 				else
 					result = result.slice(0,-1) + '\n'+indentStr2+'],';
 			}
+			// 2. Compressed data
+			else if (k == 'CompressedData') {
+				result += '[';
+				let linePos = result.lastIndexOf('\n');
+				for (let item of inValue[k]) {
+					if ((result.length - linePos) > 180) {
+						result += '\n' + indentStr2 + SerializerOptions.JsonIndentUnit;
+						linePos = result.lastIndexOf('\n');
+					}
+					result += ToJson(item) + ',';
+				}
+				if (inValue[k].length == 0)
+					result += '],';
+				else
+					result = result.slice(0,-1) + '],';
+			}
 			// Default case
 			else
 				result += ToJson(inValue[k], indentStr2, forceInline)+',';
