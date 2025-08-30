@@ -288,8 +288,12 @@ class UWriter extends UBuffer {
 		return val;
 	}
 
+	// Get buffer (trimmed) (as ArrayBuffer in web browser)
 	getBuffer() {
-		return this.buffer.slice(0, this.offset);
+		if (typeof(window) != 'undefined')
+			return this.buffer.buffer.slice(0, this.offset);
+		else
+			return this.buffer.slice(0, this.offset);
 	}
 
 	flush() {
@@ -452,18 +456,16 @@ UBuffer.registerNativeAlias('DateTime', 'int64');
 //============================================================
 // Dynamic properties
 
-const PROPERTIES_KEY = '__props__';
-
 UReader.prototype.FPropertyList = function(_, withExtraBytes) {
 	let result = {};
-	result[PROPERTIES_KEY] = [];
+	result[SerializerOptions.PropertiesKey] = [];
 	while (true) {
 		let tag = this.FPropertyTag();
 
 		if (tag.Name == "None")	//end of list
 			break;
 
-		result[PROPERTIES_KEY].push(tag);
+		result[SerializerOptions.PropertiesKey].push(tag);
 
 		//console.debug("-", tag.Type, tag.Name, tag.tag_offset, tag.data_offset, tag.Size);
 
@@ -479,7 +481,7 @@ UReader.prototype.FPropertyList = function(_, withExtraBytes) {
 
 //NOTE: When writing UProperties, we need to go back and rewrite tag.Size after writing the property value!
 UWriter.prototype.FPropertyList = function(val, withExtraBytes) {
-	for (let tag of val[PROPERTIES_KEY]) {
+	for (let tag of val[SerializerOptions.PropertiesKey]) {
 		//console.log(tag);
 		this.FPropertyTag(tag);
 		this.FPropertyValue(tag, val[tag.Name]);
@@ -659,7 +661,7 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 		// Structs without a native seralizer are essentially a FPropertyList
 		// But we need to take into account that we cannot predict which structs have a native serializer.
 		let result = {};
-		result[PROPERTIES_KEY] = [];
+		result[SerializerOptions.PropertiesKey] = [];
 		while (true) {
 			if (!this.tryPropertyTag(tag.data_offset+tag.Size)) {
 				console.error("Failed to deserialize struct property - likely a native-serialized struct: " + tag.StructName);
@@ -671,7 +673,7 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 			if (innerTag.Name == "None")
 				break;
 
-			result[PROPERTIES_KEY].push(innerTag);
+			result[SerializerOptions.PropertiesKey].push(innerTag);
 
 			//console.debug("-", innerTag.Type, innerTag.Name, innerTag.Size);
 			result[innerTag.Name] = this.FPropertyValue(innerTag);
@@ -1143,7 +1145,7 @@ function ToJson(inValue, indentStr, forceInline) {
 			if (inValue[k] === undefined)
 				continue;
 
-			if (SerializerOptions.JsonSkipReflection && k == PROPERTIES_KEY)
+			if (SerializerOptions.JsonSkipReflection && k == SerializerOptions.PropertiesKey)
 				continue;
 
 			// Serialize key (assumed it has no double quotes)
@@ -1156,7 +1158,7 @@ function ToJson(inValue, indentStr, forceInline) {
 			// 1. Force-serialize array as one line per item
 			if (inValue[k] instanceof Array && (
 					k == 'CustomVersions'
-					|| k == PROPERTIES_KEY
+					|| k == SerializerOptions.PropertiesKey
 			)) {
 				result += '[';
 				for (let item of inValue[k])
@@ -1203,6 +1205,9 @@ let SerializerOptions = {
 
 	// Stop immediately in case of failure, rather than trying to recover when possible
 	EarlyExit: false,
+
+	// Property name used to store reflection data
+	PropertiesKey: '__props__',
 
 	// Skips all reflection data when using ToJson
 	JsonSkipReflection: false,

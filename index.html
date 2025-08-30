@@ -65,13 +65,23 @@ code {
 
 <h1>TQ2 Savegame Serializer - Sample Web Integration</h1>
 <input type="file" onchange="onFile(this.files[0])" accept=".sav"/>
-<label><input type="checkbox" id="cbShowReflection" onchange="renderJson()"/>Show reflection data</label>
-<pre><code id="view" class="language-json"></code></pre>
+<div style="width:100%;display:flex;align-items:center">
+	<label><input type="checkbox" id="cbShowReflection" onchange="renderJson()"/>Show reflection data</label>
+	<label style="margin-left:2em"><input type="checkbox" id="cbHljs" onchange="renderHljs()" checked/>Syntax highlighting</label>
+	<div style="flex-grow:1"></div>
+	<button type="button" style="padding:0.3em 0.6em" onclick="resave()">Resave</button>
+</div>
+<pre><code id="view" class="language-json" contenteditable="true" spellcheck="false"></code></pre>
 
 <script src="./serializer.js" referrerpolicy="no-referrer"></script>
 <script type="text/javascript">
 
-document.addEventListener('DOMContentLoaded', () => { 
+let codeView;
+
+document.addEventListener('DOMContentLoaded', () => {
+	codeView = document.getElementById('view');
+
+	let hlTimeout;
 	document.addEventListener('dragenter', (event) => {
 		event.preventDefault();
 		//if (event.dataTransfer.items[0].type.match(/\.sav$/i))
@@ -79,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
 	});
 	document.addEventListener('dragover', (event) => {
 		event.preventDefault();
+		document.body.classList.add('drop');
 	});
 	document.addEventListener('dragleave', (event) => {
 		event.preventDefault();
@@ -90,7 +101,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 		if (event.dataTransfer.items) {
 			let item = event.dataTransfer.items[0];
-			console.log("item", item);
 			if (item.kind === 'file' )//&& item.type.match(/\.sav$/i))
 				onFile(item.getAsFile());
 		}
@@ -104,7 +114,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function onFile(file) {
-	if (file) {
+	if (file && file.name.endsWith('.sav')) {
+		fileName = file.name;
 		const reader = new FileReader();
 		reader.onload = function(event) {
 			if (event.target.readyState == FileReader.DONE)
@@ -113,14 +124,17 @@ function onFile(file) {
 		reader.onerror = onError;
 		reader.readAsArrayBuffer(file);
 	}
+	else
+		onError("Expected a .sav file type");
 }
 
-let data = null;
+let fileData = null;
+let fileName = "Unnamed.sav";
 
 function onBuffer(buf) {
 	try {
 		let reader = new TQ2SS.UReader(buf);
-		data = reader.File_Data_Player();
+		fileData = reader.File_Data_Player();
 		renderJson();
 		if (!reader.isEOF())
 			throw new Error("Deserialization complete but reader has not reached end-of-file");
@@ -129,15 +143,108 @@ function onBuffer(buf) {
 }
 
 function renderJson() {
+	if (!fileData)
+		return;
+
 	TQ2SS.Options.JsonSkipReflection = !document.getElementById('cbShowReflection').checked;
 
-	let view = document.getElementById('view');
+	codeView.innerHTML = TQ2SS.ToJson(fileData);
 
-	view.innerHTML = TQ2SS.ToJson(data);
+	setTimeout(renderHljs, 1);
+}
 
-	view.setAttribute('data-highlighted','');
+//TODO: Highlighting performance is abysmal when doing large edits (remove block, paste block)
+// We should try to detect when big changes are made (Ctrl+V or Delete/Input with a big selection range)
+// and automatically disable highlighting before doing the operation
 
-	setTimeout(hljs.highlightAll, 1);
+function renderHljs() {
+	let enabled = document.getElementById('cbHljs').checked;
+
+	if (enabled) {
+		codeView.setAttribute('data-highlighted','');
+		hljs.highlightAll();
+	}
+	else {
+		codeView.setAttribute('data-highlighted','');
+		let json = codeView.innerText;
+		codeView.innerHTML = json;
+	}
+}
+
+function resave() {
+	try {
+		let json = codeView.innerText;
+		let newData = JSON.parse(json);
+
+		if (TQ2SS.Options.JsonSkipReflection)
+			mergePropertyTags(fileData, newData);
+
+		let writer = new TQ2SS.UWriter();
+		writer.File_Data_Player(newData);
+
+		let blob = new Blob([writer.getBuffer()], { type:'application/octet-stream' });
+		let url = URL.createObjectURL(blob);
+
+		let link = document.createElement('a');
+		link.href = url;
+		link.download = fileName;
+		document.body.appendChild(link);
+		link.click();
+
+		setTimeout(() => {
+			link.remove();
+			URL.revokeObjectURL(url);
+		}, 1);
+	}
+	catch(err) {
+		onError(err);
+	}
+}
+
+function mergePropertyTags(source, dest) {
+	if (typeof(dest) != typeof(source) && dest !== undefined && source !== undefined)
+		throw new Error("Type mismatch for property '"+propName+"' - dest is "+typeof(dest)+" but source is "+typeof(source));
+
+	// Nothing to merge if one of those is true
+	if (typeof(dest) != 'object' || typeof(source) != 'object' || !dest || !source)
+		return;
+
+	if (dest instanceof Array) {
+		if (!(source instanceof Array))
+			throw new Error("Type mismatch for property '"+propName+"' - dest is Array but source is Object");
+
+		// NOTE: This is a basic system, will not support significant changes.
+		// When it comes to array of structs, the struct items may have varying property tags (since only non-defaults are serialized).
+		// If we remove an element from the array, we have no guarantee we'll find the right tags to import from source item at the modified index.
+		// Adding an array element that contains reflection data is obviously also not supported by the merger.
+		for (let i=0; i<dest.length; i++)
+			mergePropertyTags(source[i], dest[i]);
+		return;
+	}
+
+	if (source instanceof Array)
+		throw new Error("Type mismatch for property '"+propName+"' - dest is Object but source is Array");
+
+	const props = TQ2SS.Options.PropertiesKey;
+	if (source[props]) {
+		let remainingProps = Object.keys(dest);
+		dest[props] = [];
+		for (let tag of source[props]) {
+			// Only add tag if present in destination
+			if (dest[tag.Name] !== undefined)
+				dest[props].push(tag);
+
+			remainingProps.splice(remainingProps.indexOf(tag.Name), 1);
+		}
+		if (remainingProps.length > 0)
+			throw new Error("Could not find property tag(s) for "+remainingProps.join(", "));
+	}
+
+	// Recurse
+	for (let propName in dest) {
+		if (propName != props)
+			mergePropertyTags(source[propName], dest[propName]);
+	}
 }
 
 function onError(err) {
