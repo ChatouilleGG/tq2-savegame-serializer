@@ -342,7 +342,6 @@ UBuffer.prototype.FEngineVersion = function(val) {
 }
 
 UBuffer.prototype.FCustomVersionContainer = function(val) {
-	val || (val = {});
 	return this.tarray('FCustomVersion', val);
 }
 
@@ -558,20 +557,18 @@ UReader.prototype.FPropertyValue = function(tag) {
 	if (tag.Name == "None")	//not supposed to reach this
 		return undefined;
 
-	let startOffset = this.offset;
 	try {
 		let value = this.FPropertyValue_unsafe(tag);
-		if (this.offset != startOffset + tag.Size)
+		if (this.offset != tag.data_offset+tag.Size)
 			throw "Bad offset";
 		return value;
 	}
 	catch(err) {
 		console.error(err);
-		let type = tag.Type;
-		console.error("Failed deserialize (" + type + " " + tag.Name + ") " + this.offset + " != " + startOffset + "+" + tag.Size);
+		console.error("Failed deserialize (" + tag.Type + " " + tag.Name + ") " + this.offset + " != " + tag.data_offset + "+" + tag.Size);
 		console.error(tag);
 		if (tag.Size < 10000 || err != "cascade")
-			console.error(this.buffer.slice(startOffset, startOffset + tag.Size).toString('hex'));
+			console.error(this.buffer.slice(tag.data_offset, tag.data_offset+tag.Size).toString('hex'));
 
 		if (SerializerOptions.EarlyExit) {
 			if (typeof(process) != 'undefined')
@@ -580,8 +577,9 @@ UReader.prototype.FPropertyValue = function(tag) {
 				throw 'cascade';
 		}
 
-		this.seek(startOffset + tag.Size);
-		return null;
+		// Read as buffer and continue
+		this.seek(tag.data_offset);
+		return this.raw(tag.Size);
 	}
 }
 
@@ -645,7 +643,9 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 				throw 1;
 			return str;
 		}
-		catch(err) {}
+		catch(err) {
+			this.seek(tag.data_offset);
+		}
 
 		// Fallback to byte or buffer
 		if (tag.Size == 8)
@@ -658,17 +658,16 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 		if (this.NativeSerializedStructs[tag.StructName])
 			return this[this.NativeSerializedStructs[tag.StructName]]();
 
-		// Structs without a native seralizer are essentially a FPropertyList
+		// Structs without a native serializer are essentially a FPropertyList
 		// But we need to take into account that we cannot predict which structs have a native serializer.
 		let result = {};
 		result[SerializerOptions.PropertiesKey] = [];
 		while (true) {
-			if (!this.tryPropertyTag(tag.data_offset+tag.Size)) {
+			let innerTag = this.tryPropertyTag(tag.data_offset+tag.Size);
+			if (!innerTag) {
 				console.error("Failed to deserialize struct property - likely a native-serialized struct: " + tag.StructName);
 				throw 1;
 			}
-
-			let innerTag = this.FPropertyTag();
 
 			if (innerTag.Name == "None")
 				break;
@@ -717,13 +716,7 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 		// NOTE: The type of inner struct(s) are not serialized (unlike Arrays).
 		//   Generic structs are serialized as FPropertyList so we can parse them,
 		//   However native-serialized structs contain basically no information about their type or contents.
-		//   Need to identify when we fail to parse a FPropertyTag, and fall back to raw buffer.
-
-		let tryParseItem = (innerTag) => {
-			if (innerTag.Type == "BoolProperty")
-				innerTag.Type = "IntProperty";
-			return this.FPropertyValue_unsafe(innerTag);
-		};
+		//   Need to identify when we fail to parse a StructProperty, and fall back to raw buffer.
 
 		tag.InnerTag = { Type: tag.InnerType, Size: tag.Size-8 };	//again, Size is a bad estimate
 		tag.ValueTag = { Type: tag.ValueType, Size: tag.Size-8 };
@@ -731,14 +724,19 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 		// Use a generic '<PropName>:KeyStructType' struct type so we can fill it later on in the NativeSerializedStructs
 		if (tag.InnerType == "StructProperty")
 			tag.InnerTag.StructName = tag.Name+":KeyStructType";
+		else if (tag.InnerType == "BoolProperty")
+			tag.InnerTag.Type = "IntProperty";
+
 		if (tag.ValueType == "StructProperty")
 			tag.ValueTag.StructName = tag.Name+":ValueStructType";
+		else if (tag.ValueType == "BoolProperty")
+			tag.ValueTag.Type = "IntProperty";
 
 		try {
 			for (let i=0; i<result.length; i++) {
 				result[i] = {
-					key: tryParseItem(tag.InnerTag),
-					value: tryParseItem(tag.ValueTag),
+					key: this.FPropertyValue_unsafe(tag.InnerTag),
+					value: this.FPropertyValue_unsafe(tag.ValueTag),
 				};
 			}
 		}
@@ -762,23 +760,19 @@ UReader.prototype.FPropertyValue_unsafe = function(tag) {
 
 		result.removed.length = this.int32();
 
-		let tryParseItem = (innerTag) => {
-			if (innerTag.Type == "BoolProperty")
-				innerTag.Type = "IntProperty";
-			return this.FPropertyValue_unsafe(innerTag);
-		};
-
 		tag.InnerTag = { Type: tag.InnerType, Size: tag.Size-8 };
 		if (tag.InnerType == "StructProperty")
 			tag.InnerTag.StructName = tag.Name+":InnerStructType";
+		else if (tag.InnerType == "BoolProperty")
+			tag.InnerTag.Type = "IntProperty";
 
 		try {
 			for (let i=0; i<result.removed.length; i++)
-				result.removed[i] = tryParseItem(tag.InnerTag);
+				result.removed[i] = this.FPropertyValue_unsafe(tag.InnerTag);
 
 			result.added.length = this.int32();
 			for (let i=0; i<result.added.length; i++)
-				result.added[i] = tryParseItem(tag.InnerTag);
+				result.added[i] = this.FPropertyValue_unsafe(tag.InnerTag);
 		}
 		catch(err) {
 			tag.SetAsBuffer = true;
@@ -806,12 +800,12 @@ UReader.prototype.tryPropertyTag = function(outerOffsetLimit) {
 		//console.log(bkpOffset, this.offset, tag, outerOffsetLimit);
 		if (!tag.Name || (tag.Name != "None" && (this.offset >= outerOffsetLimit || !tag.Type || tag.Type.match(/[^a-z]/i) || tag.Type.indexOf("Property") < 3)))
 			throw 1;
-		this.seek(bkpOffset);
-		return true;
+
+		return tag;
 	}
 	catch(err) {
 		this.seek(bkpOffset);
-		return false;
+		return null;
 	}
 }
 
@@ -855,10 +849,10 @@ UWriter.prototype.FPropertyValue = function(tag, val) {
 		if (tag.InnerType == "StructProperty")
 			this.FPropertyTag(tag.InnerTag);
 
-		for (let i=0; i<val.length; i++)
-			this.FPropertyValue(tag.InnerTag, val[i]);
+		for (let item of val)
+			this.FPropertyValue(tag.InnerTag, item);
 
-		//NOTE: not sure what tag.Size is supposed to mean for array of structs, since there's a single tag for all structs of dynamic sizes
+		//NOTE: not sure what InnerTag.Size is supposed to mean for array of structs, since there's a single tag for all structs of dynamic sizes
 		if (tag.InnerType == "StructProperty")
 			this.goBack(tag.InnerTag.size_offset, (headOffset) => this.int32(headOffset-tag.InnerTag.data_offset));
 	}
@@ -869,9 +863,9 @@ UWriter.prototype.FPropertyValue = function(tag, val) {
 
 		this.int32(0);
 		this.int32(val.length);
-		for (let i=0; i<val.length; i++) {
-			this.FPropertyValue(tag.InnerTag, val[i].key);
-			this.FPropertyValue(tag.ValueTag, val[i].value);
+		for (let pair of val) {
+			this.FPropertyValue(tag.InnerTag, pair.key);
+			this.FPropertyValue(tag.ValueTag, pair.value);
 		}
 	}
 
@@ -882,13 +876,13 @@ UWriter.prototype.FPropertyValue = function(tag, val) {
 
 		val.removed || (val.removed = []);
 		this.int32(val.removed.length);
-		for (let i=0; i<val.removed.length; i++)
-			this.FPropertyValue(tag.InnerTag, val.removed[i]);
+		for (let item of val.removed)
+			this.FPropertyValue(tag.InnerTag, item);
 
 		val.added || (val.added = []);
 		this.int32(val.added.length);
-		for (let i=0; i<val.added.length; i++)
-			this.FPropertyValue(tag.InnerTag, val.added[i]);
+		for (let item of val.added)
+			this.FPropertyValue(tag.InnerTag, item);
 	}
 
 	else {
