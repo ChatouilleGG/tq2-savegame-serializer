@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="author" content="Chatouille">
 <title>tq2-savegame-serializer(demo)</title>
-<link rel="icon" type="image/svg" href="favicon.webp"/>
+<link rel="icon" type="image/webp" href="favicon.webp"/>
 
 <!-- SYNTAX HIGHLIGHTER -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/stackoverflow-dark.min.css">
@@ -17,6 +17,7 @@
 	box-sizing: border-box;
 	margin: 0;
 	padding: 0;
+	align-items: center;
 }
 
 html, body {
@@ -40,10 +41,7 @@ body > *+* { margin-top: 1em; }
 
 h1 { font-weight: 300; }
 
-label {
-	display: flex;
-	align-items: center;
-}
+label { display: flex; }
 
 input[type="checkbox"] {
 	width: 1.4em;
@@ -63,9 +61,14 @@ code {
 </style>
 <body>
 
-<h1>TQ2 Savegame Serializer - Demo</h1>
+<div style="width:100%;display:flex">
+	<img src="favicon.webp" style="height:3em;margin-right:0.5em;"/>
+	<h1>TQ2 Savegame Serializer - Demo</h1>
+	<div style="flex-grow:1"></div>
+	<a href="https://github.com/ChatouilleGG/tq2-savegame-serializer" target="_blank" style="color:#09f;display:flex;text-decoration:none"><img src="https://github.githubassets.com/favicons/favicon-dark.png" style="height:1.4em;filter:brightness(0.5)sepia(1)saturate(50)hue-rotate(190deg)"/>&nbsp;github</a>
+</div>
 <input type="file" onchange="onFile(this.files[0])" accept=".sav"/>
-<div style="width:100%;display:flex;align-items:center">
+<div style="width:100%;display:flex">
 	<label><input type="checkbox" id="cbShowReflection" onchange="renderJson()"/>Show reflection data</label>
 	<label style="margin-left:2em"><input type="checkbox" id="cbHljs" onchange="renderHljs()" checked/>Syntax highlighting</label>
 	<div style="flex-grow:1"></div>
