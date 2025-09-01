@@ -58,6 +58,19 @@ pre {
 code {
 	height: 100%;
 }
+
+#codeView, #plainView {
+	position: absolute;
+	left: 0;
+	top: 0;
+	right: 0;
+	bottom: 0;
+}
+#plainView:not(.visible) {
+	background: transparent;
+	color: transparent;
+	caret-color: white;
+}
 </style>
 <body>
 
@@ -74,17 +87,39 @@ code {
 	<div style="flex-grow:1"></div>
 	<button type="button" style="padding:0.3em 0.6em" onclick="resave()">Resave</button>
 </div>
-<pre><code id="view" class="language-json" contenteditable="true" spellcheck="false"></code></pre>
+<pre style="position:relative">
+	<code id="codeView" class="hljs language-json"></code>
+	<code id="plainView" class="hljs" contenteditable="true" spellcheck="false"></code>
+</pre>
 
 <script src="./serializer.js" referrerpolicy="no-referrer"></script>
 <script type="text/javascript">
 
-let codeView;
+let cbHljs, cbShowReflection, codeView, plainView;
+
+const TYPING_HIGHLIGHT_DELAY = 1000;
 
 document.addEventListener('DOMContentLoaded', () => {
-	codeView = document.getElementById('view');
+	cbHljs = document.getElementById('cbHljs');
+	cbShowReflection = document.getElementById('cbShowReflection');
+	codeView = document.getElementById('codeView');
+	plainView = document.getElementById('plainView');
 
-	let hlTimeout;
+	// Improve editing performance by shadowing a plain text view, applying highlight with a delay when editing
+	let restoreHljsTimeout;
+	plainView.addEventListener('scroll', () => {
+		// Shadow scrolling
+		codeView.scrollTop = plainView.scrollTop;
+		codeView.scrollLeft = plainView.scrollLeft;
+	});
+	plainView.addEventListener('input', () => {
+		// Plain view takes over while editing, no point in keeping the shadow view updated until highlighting
+		plainView.classList.add('visible');
+		clearTimeout(restoreHljsTimeout);
+		restoreHljsTimeout = setTimeout(renderHljs, TYPING_HIGHLIGHT_DELAY);
+	});
+
+	// Drag & drop file
 	document.addEventListener('dragenter', (event) => {
 		event.preventDefault();
 		//if (event.dataTransfer.items[0].type.match(/\.sav$/i))
@@ -149,34 +184,28 @@ function renderJson() {
 	if (!fileData)
 		return;
 
-	TQ2SS.Options.JsonSkipReflection = !document.getElementById('cbShowReflection').checked;
+	TQ2SS.Options.JsonSkipReflection = !cbShowReflection.checked;
 
-	codeView.innerHTML = TQ2SS.ToJson(fileData);
+	plainView.innerHTML = TQ2SS.ToJson(fileData);
 
 	setTimeout(renderHljs, 1);
 }
 
-//TODO: Highlighting performance is abysmal when doing large edits (remove block, paste block)
-// We should try to detect when big changes are made (Ctrl+V or Delete/Input with a big selection range)
-// and automatically disable highlighting before doing the operation
-
 function renderHljs() {
-	let enabled = document.getElementById('cbHljs').checked;
-
-	if (enabled) {
-		codeView.setAttribute('data-highlighted','');
-		hljs.highlightAll();
+	codeView.setAttribute('data-highlighted','');
+	if (cbHljs.checked) {
+		codeView.innerHTML = plainView.innerHTML;
+		plainView.classList.remove('visible');
+		// let a frame happen before the highlighting hiccup
+		setTimeout(hljs.highlightElement, 1, codeView);
 	}
-	else {
-		codeView.setAttribute('data-highlighted','');
-		let json = codeView.innerText;
-		codeView.innerHTML = json;
-	}
+	else
+		plainView.classList.add('visible');
 }
 
 function resave() {
 	try {
-		let json = codeView.innerText;
+		let json = plainView.innerText;
 		let newData = JSON.parse(json);
 
 		if (TQ2SS.Options.JsonSkipReflection)
@@ -200,7 +229,54 @@ function resave() {
 		}, 1);
 	}
 	catch(err) {
+		if (err instanceof SyntaxError) {
+			m = err.toString().match(/line (\d+)/i);
+			if (m) {
+				gotoLine(parseInt(m[1]));
+				return setTimeout(onError, 1, err);
+			}
+			else {
+				let m = err.toString().match(/position (\d+)/i);
+				if (m) {
+					let position = parseInt(m[1]);
+					let line = plainView.innerText.slice(0,position).match(/\n/g).length + 1;
+					gotoLine(line);
+					return setTimeout(onError, 1, err);
+				}
+			}
+		}
 		onError(err);
+	}
+}
+
+function gotoLine(lineNum) {
+	const rgx = /\n/g;
+	while (m = rgx.exec(plainView.innerText)) {
+		lineNum--;
+		if (lineNum <= 1) {
+			let range = document.createRange();
+			range.setStart(plainView.childNodes[0], m.index+1);
+
+			if (m = rgx.exec(plainView.innerText))
+				range.setEnd(plainView.childNodes[0], m.index);
+			else
+				range.setEnd(plainView.childNodes[0], plainView.innerText.length);
+
+			window.getSelection().removeAllRanges();
+			window.getSelection().addRange(range);
+
+			let posY = range.getBoundingClientRect().top;
+			let codeTop = plainView.getBoundingClientRect().top;
+			let targetPosY = codeTop + plainView.getBoundingClientRect().height/2;
+			console.log(posY, codeTop, targetPosY);
+			plainView.scrollBy({
+				top: posY - targetPosY,
+				left: -plainView.scrollLeft,
+				behavior: 'instant',
+			});
+
+			break;
+		}
 	}
 }
 
